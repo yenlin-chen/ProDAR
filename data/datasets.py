@@ -11,6 +11,7 @@ else:
         preprocessor as pp,
         utils
     )
+
 from os import path
 import json
 import networkx as nx
@@ -51,9 +52,9 @@ class ProDAR_Dataset(pyg.data.Dataset):
         if not any((cont, corr)):
             raise ValueError('At least one pipeline must be turned on.')
         else:
-            print('  Contact pipeline in activated.') if cont else None
-            print('  Correlation pipeline in activated.') if corr else None
-            print('  Persistence homology pipeline in activated.'
+            print('  Contact pipeline is active.') if cont else None
+            print('  Correlation pipeline is active.') if corr else None
+            print('  Persistence homology pipeline is active.'
                   '') if pers else None
 
         self.set_name = set_name
@@ -75,30 +76,9 @@ class ProDAR_Dataset(pyg.data.Dataset):
         self.raw_pi_dir = path.join(pp.df_pi_root, self.pi_setup)
 
         self.stats_root = path.join(pp.df_stats_root, set_name)
-        target_dir = path.join(self.stats_root, 'target')
 
-        self.stats_dir = path.join(self.stats_root, self.folder_name)
-
-        ################################################################
-        # get list of IDs for this dataset
-        ################################################################
-        file1 = path.join(self.stats_dir, pp.df_mfgo_filename)
-        file2 = path.join(target_dir, pp.df_mfgo_filename)
-        if path.exists(file1):
-            self.mfgo_file = file1
-        elif path.exists(file2):
-            self.mfgo_file = file2
-        else:
-            FileNotFoundError(f'Cannot find MF-GO file '
-                              f'{pp.df_mfgo_filename} for selection '
-                              f'{set_name}')
-
-        # with open(self.mfgo_file, 'r') as f_in:
-        #     self.mfgo_dict = json.load(f_in)
-        # self.id_list = [ID for ID in self.mfgo_dict]
-
-        # self.entry_type = utils.check_id_type(self.id_list)
-
+        self.stats_dir = path.join(self.stats_root,
+                                   f'{self.nma_setup}-{self.pi_setup}')
 
         ################################################################
         # save all dataset parameters
@@ -115,10 +95,18 @@ class ProDAR_Dataset(pyg.data.Dataset):
         self.simplex = simplex
 
         ################################################################
-        # misc
+        # get list of IDs for this dataset
         ################################################################
-        # self.n_GO_terms = max([e for v in self.mfgo_dict.values()
-        #                          for e in v]) + 1
+        file = path.join(self.stats_dir, pp.df_mfgo_filename)
+
+        # file exists if the preprocessor was executed on this dataset
+        if path.exists(file):
+            self.mfgo_file = file
+            self.n_GO_terms = np.unique([e for v in self.mfgo_dict.values()
+                                           for e in v]).size
+        # run preprocessor if it was not executed before
+        else:
+            self.download()
 
         ################################################################
         # Call constuctor of parent class
@@ -139,11 +127,20 @@ class ProDAR_Dataset(pyg.data.Dataset):
         return [ID for ID in self.mfgo_dict]
 
     @property
-    def raw_dir(self): # -> str:
+    def pos_weight(self):
+        mfgo_list = [e for v in self.mfgo_dict.values() for e in v]
+        unique, count, indices = np.unique(mfgo_list,
+                                           return_inverse=True,
+                                           return_counts=True)
+        pos_weight = ( len(self.mfgo_dict)-count[indices] ) / count[indices]
+        return torch.from_numpy(pos_weight)
+
+    @property
+    def raw_dir(self):
         return self.raw_graph_dir
 
     @property
-    def processed_dir(self): # -> str:
+    def processed_dir(self):
         return path.join(df_processed_root, self.folder_name)
 
     @property
@@ -155,23 +152,39 @@ class ProDAR_Dataset(pyg.data.Dataset):
         return [f'{ID}.pt' for ID in self.id_list]
 
     def download(self):
+        '''
+        Run preprocessor processes to generate raw data.
+        Uses existing label file if exists.
+        '''
+
+        label_dir = path.join(self.stats_root, 'labels')
+
         process = pp.Preprocessor(set_name=self.set_name,
                                   entry_type=self.entry_type)
+
+        if not path.exists(path.join(label_dir, pp.df_mfgo_filename)):
+            process.gen_labels(threshold=0,
+                               retry_download=False,
+                               redownload=False,
+                               verbose=True)
+
         process.preprocess(simplex=self.simplex,
                            cutoff=self.cutoff,
                            gamma=self.gamma,
                            corr_thres=self.thres,
                            n_modes=self.n_modes,
-                           retry_failed=False,
+                           retry_download=False,
                            rebuild_pi=False,
                            rebuild_graph=False,
                            update_mfgo=True,
                            verbose=True)
         self.mfgo_file = path.join(self.stats_dir, pp.df_mfgo_filename)
+        self.n_GO_terms = np.unique([e for v in self.mfgo_dict.values()
+                                       for e in v]).size
 
     def process(self):
-        count = 0
-        for idx, ID in enumerate(tqdm(self.id_list, desc='  Processing data',
+        for idx, ID in enumerate(tqdm(self.id_list,
+                                      desc='  Processing data (PyG)',
                                       ascii=True, dynamic_ncols=True)):
             with open(path.join(self.raw_graph_dir, ID+'.json'), 'r') as fin:
                 js_graph = json.load(fin)
@@ -195,8 +208,8 @@ class ProDAR_Dataset(pyg.data.Dataset):
             ############################################################
 
             n_unique_residues = np.unique(list(res_dict.values()))
-            x = np.zeros((len(data.resname), len(n_unique_residues)))#,
-                         # dtype=np.int_)
+            x = np.zeros((len(data.resname), len(n_unique_residues)),
+                         dtype=np.int_)
 
             for j, residue in enumerate(data.resname):
                 if residue not in res_dict:
@@ -206,16 +219,14 @@ class ProDAR_Dataset(pyg.data.Dataset):
             data.x = torch.from_numpy(x)
 
             pi = np.load(path.join(self.raw_pi_dir, ID+'.npy'))
-            data.pi = torch.from_numpy(pi)
+            data.pi = torch.from_numpy(pi).float()
 
             ############################################################
-            # MFGO
+            # labels
             ############################################################
 
-            self.n_GO_terms = ( max([e for v in self.mfgo_dict.values()
-                                     for e in v]) + 1 )
-            y = np.zeros((1, self.n_GO_terms))#, dtype=np.in)
-            y[0, self.mfgo_dict[ID]] += 1
+            y = np.zeros((1, self.n_GO_terms), dtype=np.int_)
+            y[0, self.mfgo_dict[ID]] = 1
 
             data.y = torch.from_numpy(y)
 
@@ -232,12 +243,8 @@ class ProDAR_Dataset(pyg.data.Dataset):
             processed_filename = ID+'.pt'
             torch.save(data, path.join(self.processed_dir, processed_filename))
 
-            # count+=1
-            # if count == 5:
-            #     break
-
     def len(self):
-        return len(self.processed_file_names)
+        return len(self.mfgo_dict)
 
     def get(self, idx):
         return torch.load(path.join(self.processed_dir,
@@ -255,6 +262,18 @@ class Contact8A(ProDAR_Dataset):
                          cont=cont, corr=corr, pers=pers,
                          cutoff=cutoff, gamma=pp.df_gamma, thres=pp.df_corr_thres,
                          n_modes=pp.df_n_modes, simplex=pp.df_simplex)
+
+    @property
+    def mfgo_dict(self):
+        return super().mfgo_dict
+
+    @property
+    def id_list(self):
+        return super().id_list
+
+    @property
+    def pos_weight(self):
+        return super().pos_weight
 
     @property
     def raw_dir(self): # -> str:
@@ -297,6 +316,18 @@ class ContactCorrPers8A(ProDAR_Dataset):
                          n_modes=pp.df_n_modes, simplex=pp.df_simplex)
 
     @property
+    def mfgo_dict(self):
+        return super().mfgo_dict
+
+    @property
+    def id_list(self):
+        return super().id_list
+
+    @property
+    def pos_weight(self):
+        return super().pos_weight
+
+    @property
     def raw_dir(self): # -> str:
         return super().raw_dir
 
@@ -334,6 +365,18 @@ class ContactCorrPers12A(ProDAR_Dataset):
         super().__init__(set_name=set_name, cont=cont, corr=corr, pers=pers,
                          cutoff=cutoff, gamma=pp.df_gamma, thres=pp.df_corr_thres,
                          n_modes=pp.df_n_modes, simplex=pp.df_simplex)
+
+    @property
+    def mfgo_dict(self):
+        return super().mfgo_dict
+
+    @property
+    def id_list(self):
+        return super().id_list
+
+    @property
+    def pos_weight(self):
+        return super().pos_weight
 
     @property
     def raw_dir(self): # -> str:
@@ -376,6 +419,5 @@ if __name__ == '__main__':
     dataset = ContactCorrPers8A(set_name='test',
                                 entry_type='chain')
 
-
-    # dataset = ContactCorrPers8A(set_name='deepfri-all',
-    #                             entry_type='chain')
+    print(dataset[0].x)
+    print(dataset[1].y)
