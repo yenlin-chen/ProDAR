@@ -5,6 +5,7 @@ if __name__ == '__main__':
     import utils
 else:
     from . import utils
+# from . import utils
 
 import json
 import requests
@@ -300,7 +301,7 @@ class Preprocessor():
         # discard annotations with too few entries
         if threshold:
             mask = mfgo_cnt >= threshold
-            mfgo_thres = mfgo_unique[~mask]
+            # mfgo_thres = mfgo_unique[~mask]
             mfgo_unique = mfgo_unique[mask]
             mfgo_cnt = mfgo_cnt[mask]
 
@@ -329,7 +330,7 @@ class Preprocessor():
                     if m['chain_id'] == ID[5:]:
                         # get index of the code
                         loc = np.argwhere(mfgo_unique==code)
-                        # if there is no match
+                        # if there is no match (if num < threshold)
                         if loc.size == 0:
                             continue
                         # append index to list if there is a match
@@ -498,7 +499,7 @@ class Preprocessor():
         return pers_img, msg
 
     def comp_freqs(self, ID, atoms=None,
-                   cutoff=df_cutoff, gamma=df_gamma, corr_thres=df_corr_thres,
+                   cutoff=df_cutoff, gamma=df_gamma,
                    n_modes=df_n_modes, nCPUs=cpu_count(), verbose=None):
 
         '''
@@ -585,7 +586,6 @@ class Preprocessor():
         utils.vprint(verbose, '  Computing modes...', end='', flush=True)
         anm, freqs, msg = self.comp_freqs(ID, atoms=atoms, cutoff=cutoff,
                                           gamma=gamma,
-                                          corr_thres=corr_thres,
                                           n_modes=n_modes, nCPUs=nCPUs,
                                           verbose=False)
         if not anm:
@@ -648,7 +648,8 @@ class Preprocessor():
         utils.vprint(verbose, msg)
         return graph_dict, msg
 
-    def _update_MFGO_indices(self, successful_ids, save_dir, verbose=True):
+    def _update_MFGO_indices(self, successful_ids, save_dir, squeeze=True,
+                             verbose=True):
 
         '''
         Updates the list of ID-MFGO saved in preprocessing/stats/target,
@@ -665,10 +666,8 @@ class Preprocessor():
                   'r') as f_out:
             id_mfgo = json.load(f_out)
 
-        # id_mfgo_lower = {ID.lower(): id_mfgo[ID] for ID in id_mfgo}
+        # fish out all entries in successful_ids
         try:
-            # new_id_mfgo = { ID: id_mfgo_lower[ID.lower()]
-            #                     for ID in successful_ids }
             new_id_mfgo = { utils.id_to_filename(ID): id_mfgo[ID]
                             for ID in successful_ids }
         except KeyError as err:
@@ -677,6 +676,45 @@ class Preprocessor():
             utils.vprint(verbose, 'MFGO indices will not be updated')
             return None
 
+        mfgo_list = [e for v in new_id_mfgo.values()
+                       for e in v]
+        new_mfgo_unique, new_mfgo_cnt = np.unique(mfgo_list,
+                                              return_counts=True)
+
+        # squeeze the numbering towards 0 (start from 0 continuously)
+        if squeeze:
+            for ID in new_id_mfgo:
+                new_id_mfgo[ID] = [ int(np.argwhere(new_mfgo_unique==e)[0,0])
+                                    for e in new_id_mfgo[ID] ]
+
+        # update mfgo-count file
+        cnt_file = path.join(self.label_dir, df_mfgo_cnt_filename)
+        if path.exists(cnt_file):
+            mfgo_unique = np.loadtxt(cnt_file, dtype=str)[:,0]
+
+            new_cnt = np.column_stack((mfgo_unique[new_mfgo_unique],
+                                       new_mfgo_cnt))
+        else:
+            new_cnt = np.column_stack((np.arange(new_mfgo_unique.size),
+                                       new_mfgo_cnt))
+
+        # save count to drive
+        np.savetxt(path.join(save_dir, df_mfgo_cnt_filename),
+                   new_cnt, fmt='%s %s')
+
+        # check if any labels are present in every data entry
+        warning_file = path.join(save_dir, 'warning.txt')
+        if any(new_mfgo_cnt==len(new_id_mfgo)):
+            msg = (f'Warning: Labels '
+                   f'{new_mfgo_unique[new_mfgo_cnt==len(new_id_mfgo)]} '
+                   f'exists in all data entries')
+            with open(warning_file, 'w+') as f_out:
+                f_out.write(msg)
+                f_out.flush()
+        elif path.exists(warning_file):
+            remove_file(warning_file)
+
+        # save id-mfgo
         with open(path.join(save_dir, df_mfgo_filename),
                   'w+') as f_out:
             json.dump(new_id_mfgo, f_out,
@@ -817,6 +855,7 @@ class Preprocessor():
                 utils.append_to_file(f'{ID} -> PI: {msg}', dataset_log)
                 unsuccessful_ids.append(ID)
                 continue
+
             ############################################################
             # try to generate graphs (normal mode analysis)
             ############################################################
@@ -872,13 +911,13 @@ class Preprocessor():
         if update_mfgo:
             print('Updating MFGO label files...') #, end='')
             id_mfgo = self._update_MFGO_indices(successful_ids, save_dir,
-                                                verbose=False)
+                                                squeeze=True, verbose=False)
             if id_mfgo:
                 print('  Done')
             else:
                 print('  Update aborted')
 
-        print('\n>>> Preprocessing Complete')
+        print('>>> Preprocessing Complete')
 
     def cleanup():
 
@@ -891,24 +930,7 @@ class Preprocessor():
 
 if __name__ == '__main__':
 
-    # process = Preprocessor(set_name='deepfri-all', entry_type='chain')
-
-    # process.preprocess(simplex=df_simplex,
-    #                    cutoff=8, gamma=df_gamma,
-    #                    corr_thres=df_corr_thres, n_modes=df_n_modes,
-    #                    retry_download=True,
-    #                    rebuild_pi=False, rebuild_graph=False,
-    #                    update_mfgo=True, verbose=None)
-
-    # process.preprocess(simplex=df_simplex,
-    #                    cutoff=12, gamma=df_gamma,
-    #                    corr_thres=df_corr_thres, n_modes=df_n_modes,
-    #                    retry_download=False,
-    #                    rebuild_pi=False, rebuild_graph=False,
-    #                    update_mfgo=True, verbose=None)
-
-
-    # process = Preprocessor(set_name='deepfri-valid', entry_type='chain')
+    # process = Preprocessor(set_name='test', entry_type='chain')
 
     # process.preprocess(simplex=df_simplex,
     #                    cutoff=8, gamma=df_gamma,
@@ -917,22 +939,15 @@ if __name__ == '__main__':
     #                    rebuild_pi=False, rebuild_graph=False,
     #                    update_mfgo=True, verbose=None)
 
-    # process.preprocess(simplex=df_simplex,
-    #                    cutoff=12, gamma=df_gamma,
-    #                    corr_thres=df_corr_thres, n_modes=df_n_modes,
-    #                    retry_download=False,
-    #                    rebuild_pi=False, rebuild_graph=False,
-    #                    update_mfgo=True, verbose=None)
-
-    dataset_list = ['deepfri-all', 'deepfri-test', 'deepfri-train', 'deepfri-valid']
+    dataset_list = ['original_7k', 'deepfri-all', 'deepfri-test', 'deepfri-train', 'deepfri-valid']
 
     for set_name in dataset_list:
 
         process = Preprocessor(set_name=set_name, entry_type='chain')
 
-        id_mfgo = process.gen_labels(id_list=None, threshold=0,
-                                     retry_download=False, redownload=False,
-                                     verbose=None)
+        # id_mfgo = process.gen_labels(id_list=None, threshold=0,
+        #                              retry_download=False, redownload=False,
+        #                              verbose=None)
         process.preprocess(simplex=df_simplex,
                            cutoff=8, gamma=df_gamma,
                            corr_thres=df_corr_thres, n_modes=df_n_modes,
