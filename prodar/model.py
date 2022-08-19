@@ -2,6 +2,7 @@
 # coding: utf-8
 
 import json
+import sys
 from os import path
 
 import torch
@@ -122,6 +123,12 @@ class ProDAR_NN(nn.Module):
         with open(path.join(save_dir, 'prodar_nn-args.json'), 'w+') as f_out:
             json.dump(self.all_args, f_out,
                       indent=4, separators=(',', ': '), sort_keys=True)
+
+        with open(path.join(save_dir, 'prodar_nn-summary.txt'), 'w+') as sys.stdout:
+            print(model, end='\n\n')
+            summary(model)
+        sys.stdout = sys.__stdout__
+
 
 if __name__ == '__main__':
 
