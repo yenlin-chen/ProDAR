@@ -250,7 +250,6 @@ class ProDAR_Dataset(pyg.data.Dataset):
         return torch.load(path.join(self.processed_dir,
                                     self.processed_file_names[idx]))
 
-
 class Contact8A(ProDAR_Dataset):
 
     def __init__(self, set_name, entry_type):
