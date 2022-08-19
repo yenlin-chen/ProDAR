@@ -125,8 +125,8 @@ class ProDAR_NN(nn.Module):
                       indent=4, separators=(',', ': '), sort_keys=True)
 
         with open(path.join(save_dir, 'prodar_nn-summary.txt'), 'w+') as sys.stdout:
-            print(model, end='\n\n')
-            summary(model)
+            print(self, end='\n\n')
+            summary(self)
         sys.stdout = sys.__stdout__
 
 

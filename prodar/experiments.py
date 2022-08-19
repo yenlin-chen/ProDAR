@@ -85,10 +85,18 @@ class ProDAR_Experiment():
 
         if valid_dataset:
             print(f'Using \'{valid_dataset.set_name}\' for validation.')
-            self._set_train_dataloader(dataset, batch_size,
+            train_dataset = dataset
+            self._set_train_dataloader(train_dataset, batch_size,
                                        shuffle, num_workers, seed_worker)
             self._set_valid_dataloader(valid_dataset, batch_size,
                                        num_workers)
+
+            # save IDs in both datasets for reference
+            np.savetxt(path.join(self.save_dir, 'train-id_list.txt'),
+                       train_dataset.id_list, fmt='%s')
+            np.savetxt(path.join(self.save_dir, 'valid-id_list.txt'),
+                       valid_dataset.id_list, fmt='%s')
+
         else:
             print(f'Spliting \'{dataset.set_name}\' into training and '
                   f'validation dataset with ratio {train_valid_split}')
@@ -106,6 +114,12 @@ class ProDAR_Experiment():
             self._set_valid_dataloader(valid_dataset, batch_size,
                                        num_workers)
 
+            # save IDs in both datasets for reference
+            np.savetxt(path.join(self.save_dir, 'train-id_list.txt'),
+                       train_dataset.dataset.id_list, fmt='%s')
+            np.savetxt(path.join(self.save_dir, 'valid-id_list.txt'),
+                       valid_dataset.dataset.id_list, fmt='%s')
+
     def set_loss_fn(self, loss_fn, pos_weight=None, **loss_kwargs):
         if pos_weight is not None:
             pos_weight = pos_weight.to(self.device)
@@ -115,8 +129,16 @@ class ProDAR_Experiment():
         self.optimizer = optimizer_fn(self.model.parameters(), lr,
                                       **optim_kwargs)
 
-    def output_to_pred(self, output, thres=0.5):
-        return torch.where(torch.sigmoid(output)>=thres, 1, 0)
+    def _comp_tp_fp_tn_fn(self, output, data_y, thres=0.5):
+
+        pred = torch.where(torch.sigmoid(output)>=thres, 1, 0)
+
+        tp = torch.logical_and(pred==1, data_y==1).detach().sum().item()
+        fp = torch.logical_and(pred==1, data_y==0).detach().sum().item()
+        tn = torch.logical_and(pred==0, data_y==0).detach().sum().item()
+        fn = torch.logical_and(pred==0, data_y==1).detach().sum().item()
+
+        return np.array([tp, fp, tn, fn])
 
     def _train_one_epoch(self, epoch_number=0, thers=0.5):
 
@@ -124,7 +146,7 @@ class ProDAR_Experiment():
         self.model.train()
 
         total_loss = 0.
-        tp, fp, tn, fn = 0, 0, 0, 0
+        tp_fp_tn_fn = np.zeros((4,))
 
         for i, data in enumerate(tqdm(self.train_dataloader,
                                       desc=(f'    {"Training":10s}'),
@@ -148,29 +170,20 @@ class ProDAR_Experiment():
 
             total_loss += loss.item()
 
-            # compute metrics
-            pred = self.output_to_pred(output)
-
-            tp += torch.logical_and(pred==1, data.y==1).detach().sum().item()
-            fp += torch.logical_and(pred==1, data.y==0).detach().sum().item()
-            tn += torch.logical_and(pred==0, data.y==0).detach().sum().item()
-            fn += torch.logical_and(pred==0, data.y==1).detach().sum().item()
+            # confusion matrix elements
+            tp_fp_tn_fn += self._comp_tp_fp_tn_fn(output, data.y)
 
         avg_loss = total_loss / len(self.train_dataloader.dataset)
 
-        ppv = tp / (tp + fp)# if (tp + fp) < 1e-9 else 0
-        tpr = tp / (tp + fn)# if (tp + fn) < 1e-9 else 0
-        tnr = tn / (tn + fp)# if (tn + fp) < 1e-9 else 0
-
-        return avg_loss, ppv, tpr, tnr
+        return avg_loss, tp_fp_tn_fn
 
     @torch.no_grad()
-    def evaluate(self, dataloader, action_name='Evaluation'):
+    def _evaluate(self, dataloader, action_name='Evaluation'):
 
         self.model.train(False)
 
         total_loss = 0.
-        tp, fp, tn, fn = 0, 0, 0, 0
+        tp_fp_tn_fn = np.zeros((4,))
 
         for i, data in enumerate(tqdm(dataloader,
                                       desc=f'    {action_name:10s}',
@@ -185,31 +198,40 @@ class ProDAR_Experiment():
 
             total_loss += loss.item()
 
-            # compute metrics
-            pred = self.output_to_pred(output)
-
-            tp += torch.logical_and(pred==1, data.y==1).detach().sum().item()
-            fp += torch.logical_and(pred==1, data.y==0).detach().sum().item()
-            tn += torch.logical_and(pred==0, data.y==0).detach().sum().item()
-            fn += torch.logical_and(pred==0, data.y==1).detach().sum().item()
-
-            tqdm.write(f'{[tp, fp, tn, fn]}')
+            # confusion matrix elements
+            tp_fp_tn_fn += self._comp_tp_fp_tn_fn(output, data.y)
 
         avg_loss = total_loss / len(dataloader.dataset)
 
-        ppv = tp / (tp + fp)# if (tp + fp) < 1e-9 else 0
-        tpr = tp / (tp + fn)# if (tp + fn) < 1e-9 else 0
-        tnr = tn / (tn + fp)# if (tn + fp) < 1e-9 else 0
-
-        return avg_loss, ppv, tpr, tnr
+        return avg_loss, tp_fp_tn_fn
 
     def validate(self):
-        return self.evaluate(action_name='Validation',
-                             dataloader=self.valid_dataloader)
+        return self._evaluate(action_name='Validation',
+                                  dataloader=self.valid_dataloader)
 
-    def test(self, test_dataloader):
-        return self.evaluate(action_name='Testing',
-                             dataloader=test_dataloader)
+    def test(self, test_dataset, batch_size=32, num_workers=cpu_count()):
+
+        test_dataloader = DataLoader(
+           test_dataset,
+           batch_size=batch_size,
+           num_workers=num_workers
+        )
+
+        np.savetxt(path.join(self.save_dir, 'test-id_list.txt'),
+                   test_dataset.id_list, fmt='%s')
+
+        print(f'Test dataset: {len(test_dataloader.dataset)} entries')
+
+        return self._evaluate(action_name='Testing',
+                              dataloader=test_dataloader)
+
+    def comp_metrics(self, tp, fp, tn, fn):
+
+        ppv = tp / (tp + fp)
+        tpr = tp / (tp + fn)
+        tnr = tn / (tn + fp)
+
+        return ppv, tpr, tnr # precision, recall, specificity
 
     def train_valid_loop(self, n_epoch=300):
 
@@ -224,8 +246,11 @@ class ProDAR_Experiment():
             print(f'\nEPOCH {epoch_number} of {n_epoch}')
 
             # Make sure gradient tracking is on, and do a pass over the data
-            train_loss, train_ppv, train_tpr, train_tnr = self._train_one_epoch()
-            valid_loss, valid_ppv, valid_tpr, valid_tnr = self.validate()
+            train_loss, tp_fp_tn_fn = self._train_one_epoch()
+            _, train_tpr, train_tnr = self.comp_metrics(*tp_fp_tn_fn)
+
+            valid_loss, tp_fp_tn_fn = self.validate()
+            _, valid_tpr, valid_tnr = self.comp_metrics(*tp_fp_tn_fn)
 
             train_acc = ( train_tpr + train_tnr )/2
             valid_acc = ( valid_tpr + valid_tnr )/2
@@ -263,9 +288,54 @@ class ProDAR_Experiment():
         torch.save(self.optimizer.state_dict(),
                    path.join(self.save_dir, f'{prefix}-optim-state_dict.pt'))
 
-    def load_params(self, file):
+    def load_params(self, params_file):
 
-        self.model = torch.load(file).to(self.device)
+        self.model = torch.load(params_file).to(self.device)
+
+    @torch.no_grad()
+    def get_pr_curve(self, dataloader, n_intervals=100):
+
+        # make pass through model and record output of last layer
+        self.model.train(False)
+
+        output_all = []
+        data_y_all = []
+
+        for i, data in enumerate(tqdm(dataloader,
+                                      desc=f'    {"PR eval":10s}',
+                                      ascii=True, dynamic_ncols=True)):
+
+            data = data.to(self.device)
+            data.x, data.y = data.x.float(), data.y.float()
+
+            output = self.model(data)
+
+            output_all.append(output)
+            data_y_all.append(data.y)
+
+        # compute confusion matrix elements for all thresholds (0~1)
+        tp_fp_tn_fn_all = np.empty((n_intervals,4))
+
+        for thres_idx, thres in enumerate(np.linspace(0,1,n_intervals)):
+
+            for idx in range(len(output_all)):
+                output = output_all[idx]
+                data_y = data_y_all[idx]
+
+                tp_fp_tn_fn += self._comp_tp_fp_tn_fn(output, data_y,
+                                                      thres=thres)
+
+            tp_fp_tn_fn_all[thres_idx] = tp_fp_tn_fn
+
+        # compute metrics
+        precision, recall, _ = self.comp_metrics(*tp_fp_tn_fn_all)
+
+        aupr = np.trapz(np.flip(precision), x=np.flip(recall))
+        f1 = 2*recall*precision / (recall+precision)
+        f1_max_idx = np.argmax(f1)
+        f1_max = f1[f1_max_idx]
+
+        return precision, recall
 
 if __name__ == '__main__':
 
