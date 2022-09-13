@@ -940,7 +940,7 @@ class Preprocessor():
 
         print('>>> Preprocessing Complete')
 
-    def cleanup():
+    def cleanup(self):
 
         while True:
             inp = input(f'All preprocessed data not in {self.set_name} '
