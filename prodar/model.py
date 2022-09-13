@@ -124,7 +124,8 @@ class ProDAR_NN(nn.Module):
             json.dump(self.all_args, f_out,
                       indent=4, separators=(',', ': '), sort_keys=True)
 
-        with open(path.join(save_dir, 'prodar_nn-summary.txt'), 'w+') as sys.stdout:
+        with open(path.join(save_dir, 'prodar_nn-summary.txt'), 'w+',
+                  encoding='utf-8') as sys.stdout:
             print(self, end='\n\n')
             summary(self)
         sys.stdout = sys.__stdout__

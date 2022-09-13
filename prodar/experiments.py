@@ -1,15 +1,19 @@
 #!/usr/bin/env python
 # coding: utf-8
 
+from .visualization import Plotter
+
 import random
 import numpy as np
 from tqdm import tqdm
 from datetime import datetime
+import time
 from os import cpu_count, path, makedirs
 
 import torch
 from torch import nn
 from torch.utils.data import random_split
+from torch.utils.data.dataset import Subset
 import torchinfo
 
 from torch_geometric.loader import DataLoader
@@ -27,13 +31,22 @@ def seed_worker(worker_id):
 
 class ProDAR_Experiment():
 
-    def __init__(self, nn_model, rand_seed=df_rand_seed, device=df_device):
+    def log(self, msg):
+        with open(self.exp_logfile, 'a+') as f_out:
+            f_out.write(f'[{datetime.now().strftime("%Y/%m/%d %H:%M:%S")}] '
+                        f'{msg}\n')
+            f_out.flush()
+
+    def __init__(self, nn_model, name_suffix='',
+                 rand_seed=df_rand_seed, device=df_device):
 
         # set up save directory
         self.exp_time = datetime.now().strftime('%Y%m%d_%H%M%S')
         self.save_dir = path.join(df_history_root,
-                                  f'experiment-{self.exp_time}')
+                                  f'experiment-{self.exp_time}-{name_suffix}')
         makedirs(self.save_dir, exist_ok=True)
+
+        self.exp_logfile = path.join(self.save_dir, 'experiment.log')
 
         # save model arguments
         nn_model.save_args(self.save_dir)
@@ -49,9 +62,31 @@ class ProDAR_Experiment():
         print(self.model)
         torchinfo.summary(self.model)
 
+        self.f1_max_hist = np.empty((0,3)) # f1_max, prec, recall
+        self.loss_acc_hist = np.empty((0,4))
+
+        self.plotter = Plotter(self.save_dir)
+
+        self.log(f'rand_seed: {rand_seed}')
+
     def _set_learning_rate(self, learning_rate):
         for group in optim.param_groups:
             group['lr'] = learning_rate
+
+        self.log(f'lr: {learning_rate}')
+
+    def set_loss_fn(self, loss_fn, pos_weight=None, **loss_kwargs):
+        if pos_weight is not None:
+            pos_weight = pos_weight.to(self.device)
+        self.loss_fn = loss_fn(pos_weight=pos_weight, **loss_kwargs)
+
+        self.log(f'loss_fn: {loss_fn.__name__}')
+
+    def set_optimizer(self, optimizer_fn, lr, **optim_kwargs):
+        self.optimizer = optimizer_fn(self.model.parameters(), lr,
+                                      **optim_kwargs)
+
+        self.log(f'optimizer_fn: {optimizer_fn.__name__}, lr: {lr}')
 
     def _set_train_dataloader(self, train_dataset, batch_size, shuffle,
                               num_workers, seed_worker):
@@ -64,8 +99,12 @@ class ProDAR_Experiment():
            generator=self.torch_gen
         )
 
-        print(f'Training dataset: {len(self.train_dataloader.dataset)} '
-              f'entries')
+        self.train_mfgo_dict = self.get_mfgo_dict(self.train_dataloader)
+
+        msg = (f'Training dataset: {len(self.train_dataloader.dataset)} '
+               f'entries')
+        print(msg)
+        self.log(msg)
 
     def _set_valid_dataloader(self, valid_dataset, batch_size, num_workers):
         self.valid_dataloader = DataLoader(
@@ -74,60 +113,36 @@ class ProDAR_Experiment():
            num_workers=num_workers
         )
 
-        print(f'Validation dataset: {len(self.valid_dataloader.dataset)} '
-              f'entries')
+        msg = (f'Validation dataset: {len(self.valid_dataloader.dataset)} '
+               f'entries')
+        print(msg)
+        self.log(msg)
 
-    def set_dataloaders(self, dataset, valid_dataset=None,
-                        train_valid_split=0.9,
-                        batch_size=32, shuffle=False,
-                        seed_worker=seed_worker,
-                        num_workers=cpu_count()):
+    def _set_dataloaders(self, train_dataset, valid_dataset,
+                         batch_size, shuffle=False,
+                         seed_worker=seed_worker,
+                         num_workers=cpu_count()):
 
-        if valid_dataset:
-            print(f'Using \'{valid_dataset.set_name}\' for validation.')
-            train_dataset = dataset
-            self._set_train_dataloader(train_dataset, batch_size,
-                                       shuffle, num_workers, seed_worker)
-            self._set_valid_dataloader(valid_dataset, batch_size,
-                                       num_workers)
+        self._set_train_dataloader(train_dataset, batch_size,
+                                   shuffle, num_workers, seed_worker)
+        self._set_valid_dataloader(valid_dataset, batch_size,
+                                   num_workers)
 
-            # save IDs in both datasets for reference
-            np.savetxt(path.join(self.save_dir, 'train-id_list.txt'),
-                       train_dataset.id_list, fmt='%s')
-            np.savetxt(path.join(self.save_dir, 'valid-id_list.txt'),
-                       valid_dataset.id_list, fmt='%s')
+        self.log(f'Training and Validation dataloader set '
+                 f'(batch_size: {batch_size}, shuffle: {shuffle}, '
+                 f'num_workers: {num_workers})')
 
-        else:
-            print(f'Spliting \'{dataset.set_name}\' into training and '
-                  f'validation dataset with ratio {train_valid_split}')
+    def set_dataset(self, dataset):
 
-            n_train_data = int(len(dataset)*9//(10*batch_size)*batch_size)
-            n_valid_data = len(dataset) - n_train_data
-            train_dataset, valid_dataset = random_split(
-                dataset,
-                [n_train_data, n_valid_data],
-                generator=self.torch_gen
-            )
+        self.n_GO_terms = dataset.n_GO_terms
+        self.dataset = dataset
 
-            self._set_train_dataloader(train_dataset, batch_size,
-                                       shuffle, num_workers, seed_worker)
-            self._set_valid_dataloader(valid_dataset, batch_size,
-                                       num_workers)
+    def set_valid_dataset(self, valid_dataset):
+        if not valid_dataset.n_GO_terms == self.n_GO_terms:
+            raise ValueError('Mismatching number of classes (MF-GO terms) in '
+                             'datasets')
 
-            # save IDs in both datasets for reference
-            np.savetxt(path.join(self.save_dir, 'train-id_list.txt'),
-                       train_dataset.dataset.id_list, fmt='%s')
-            np.savetxt(path.join(self.save_dir, 'valid-id_list.txt'),
-                       valid_dataset.dataset.id_list, fmt='%s')
-
-    def set_loss_fn(self, loss_fn, pos_weight=None, **loss_kwargs):
-        if pos_weight is not None:
-            pos_weight = pos_weight.to(self.device)
-        self.loss_fn = loss_fn(pos_weight=pos_weight, **loss_kwargs)
-
-    def set_optimizer(self, optimizer_fn, lr, **optim_kwargs):
-        self.optimizer = optimizer_fn(self.model.parameters(), lr,
-                                      **optim_kwargs)
+        self.valid_dataset = valid_dataset
 
     def _comp_tp_fp_tn_fn(self, output, data_y, thres=0.5):
 
@@ -140,7 +155,19 @@ class ProDAR_Experiment():
 
         return np.array([tp, fp, tn, fn])
 
-    def _train_one_epoch(self, epoch_number=0, thers=0.5):
+    def comp_metrics(self, tp, fp, tn, fn):
+
+        with np.errstate(divide='ignore', invalid='ignore'):
+
+            precision = tp / (tp + fp)
+            recall = tp / (tp + fn)
+            specificity = tn / (tn + fp)
+
+            f1 = 2*recall*precision / (recall+precision)
+
+        return precision, recall, specificity, f1
+
+    def _train_one_epoch(self):
 
         # set model to training mode
         self.model.train()
@@ -155,7 +182,11 @@ class ProDAR_Experiment():
             # Zero your gradients for every batch!
             self.optimizer.zero_grad()
 
-            data.x, data.y = data.x.float(), data.y.float()
+            data.x = data.x.float()
+            data.y = torch.zeros((len(data.ID), self.n_GO_terms))
+            for idx in range(len(data.ID)):
+                ID = data.ID[idx]
+                data.y[idx, self.train_mfgo_dict[ID]] = 1
             data = data.to(self.device)
 
             # Make predictions for this
@@ -178,36 +209,82 @@ class ProDAR_Experiment():
         return avg_loss, tp_fp_tn_fn
 
     @torch.no_grad()
-    def _evaluate(self, dataloader, action_name='Evaluation'):
+    def _evaluate(self, dataloader, return_pr, action_name='Evaluation',
+                  suppress_warning=False):
+
+        if not hasattr(self, 'loss_fn') and not suppress_warning:
+            print(' >> Warning: loss function not set')
+        self.log('loss_fn not set')
 
         self.model.train(False)
 
         total_loss = 0.
-        tp_fp_tn_fn = np.zeros((4,))
+
+        output_all = []
+        data_y_all = []
+
+        mfgo_dict = self.get_mfgo_dict(dataloader)
 
         for i, data in enumerate(tqdm(dataloader,
                                       desc=f'    {action_name:10s}',
                                       ascii=True, dynamic_ncols=True)):
 
+            data.x = data.x.float()
+            data.y = torch.zeros((len(data.ID), self.n_GO_terms))
+            for idx in range(len(data.ID)):
+                ID = data.ID[idx]
+                data.y[idx, mfgo_dict[ID]] = 1
             data = data.to(self.device)
-            data.x, data.y = data.x.float(), data.y.float()
 
             output = self.model(data)
 
-            loss = self.loss_fn(output, data.y)
+            if hasattr(self, 'loss_fn'):
+                total_loss += self.loss_fn(output, data.y).item()
 
-            total_loss += loss.item()
-
-            # confusion matrix elements
-            tp_fp_tn_fn += self._comp_tp_fp_tn_fn(output, data.y)
+            output_all.append(output)
+            data_y_all.append(data.y)
 
         avg_loss = total_loss / len(dataloader.dataset)
 
-        return avg_loss, tp_fp_tn_fn
+        # compute confusion matrix elements for all thresholds (0~1)
+        if return_pr:
+            n_intervals = 501
+            tp_fp_tn_fn_all = np.empty((n_intervals,4))
 
-    def validate(self):
-        return self._evaluate(action_name='Validation',
-                                  dataloader=self.valid_dataloader)
+            # iterate over threshold values
+            for thres_idx, thres in enumerate(np.linspace(0,1,n_intervals)):
+
+                tp_fp_tn_fn = np.zeros((4,))
+
+                for idx in range(len(output_all)):
+                    output = output_all[idx]
+                    data_y = data_y_all[idx]
+
+                    tp_fp_tn_fn += self._comp_tp_fp_tn_fn(output, data_y,
+                                                          thres=thres)
+
+                tp_fp_tn_fn_all[thres_idx] = tp_fp_tn_fn
+
+            def_tp_fp_tn_fn = tp_fp_tn_fn_all[(n_intervals-1)//2]
+
+            return avg_loss, def_tp_fp_tn_fn, tp_fp_tn_fn_all
+
+        # compute confusion matrix elements for default threshold (0.5)
+        else:
+            tp_fp_tn_fn = np.zeros((4,))
+
+            for idx in range(len(output_all)):
+                output = output_all[idx]
+                data_y = data_y_all[idx]
+
+                tp_fp_tn_fn += self._comp_tp_fp_tn_fn(output, data_y)
+
+            return avg_loss, tp_fp_tn_fn
+
+    def validate(self, return_pr=False):
+        return self._evaluate(dataloader=self.valid_dataloader,
+                              return_pr=return_pr,
+                              action_name='Validation')
 
     def test(self, test_dataset, batch_size=32, num_workers=cpu_count()):
 
@@ -222,55 +299,211 @@ class ProDAR_Experiment():
 
         print(f'Test dataset: {len(test_dataloader.dataset)} entries')
 
-        return self._evaluate(action_name='Testing',
-                              dataloader=test_dataloader)
+        return self._evaluate(dataloader=test_dataloader,
+                              return_pr=False,
+                              action_name='Testing')
 
-    def comp_metrics(self, tp, fp, tn, fn):
+    def get_pr_curve(self, dataloader, n_intervals=500):
 
-        ppv = tp / (tp + fp)
-        tpr = tp / (tp + fn)
-        tnr = tn / (tn + fp)
+        _, _, tp_fp_tn_fn_all = self._evaluate(dataloader,
+                                               return_pr=True,
+                                               action_name='PR eval')
 
-        return ppv, tpr, tnr # precision, recall, specificity
+        precision, recall, _, _ = self.comp_metrics(*tp_fp_tn_fn_all.T)
 
-    def train_valid_loop(self, n_epoch=300):
+        return precision, recall
 
-        best_vloss = 1e8
+    def _train_valid_loop(self, n_epochs, train_hist_file,
+                          plot_name=''):
 
-        # for idx in tqdm(range(n_epoch), desc='Training Model',
-        #                 ascii=True, dynamic_ncols=True, position=0):
-        for idx in range(n_epoch):
+        self.log(f'Training for {n_epochs} epochs')
+        training_start_time = time.time()
+
+        # write headers to history file
+        if not path.exists(train_hist_file):
+            with open(train_hist_file, 'w+') as f_out:
+                f_out.write('epoch training_loss valid_loss '
+                            'train_acc valid_acc f1_max\n')
+                f_out.flush()
+
+        lowest_vloss = 1e8
+        best_f1 = 0
+        # train_loss, valid_loss, train_acc, valid_acc
+        f1_max_hist = np.empty((n_epochs,3))
+        loss_acc_hist = np.empty((n_epochs,4))
+
+        for idx in range(n_epochs):
+
+            epoch_start_time = time.time()
 
             epoch_number = idx + 1
 
-            print(f'\nEPOCH {epoch_number} of {n_epoch}')
+            print(f'\nEPOCH {epoch_number} of {n_epochs}')
 
             # Make sure gradient tracking is on, and do a pass over the data
             train_loss, tp_fp_tn_fn = self._train_one_epoch()
-            _, train_tpr, train_tnr = self.comp_metrics(*tp_fp_tn_fn)
+            _, train_recall, train_spec, _ = self.comp_metrics(*tp_fp_tn_fn)
 
-            valid_loss, tp_fp_tn_fn = self.validate()
-            _, valid_tpr, valid_tnr = self.comp_metrics(*tp_fp_tn_fn)
+            valid_loss, tp_fp_tn_fn, tp_fp_tn_fn_all = self.validate(return_pr=True)
+            _, valid_recall, valid_spec, _ = self.comp_metrics(*tp_fp_tn_fn)
 
-            train_acc = ( train_tpr + train_tnr )/2
-            valid_acc = ( valid_tpr + valid_tnr )/2
+            # compute all metrics
+            precision, recall, _, f1 = self.comp_metrics(*tp_fp_tn_fn_all.T)
+            f1_max_idx = np.nanargmax(f1)
+            f1_max = f1[f1_max_idx]
+            f1_max_hist[idx] = [f1_max, precision[f1_max_idx], recall[f1_max_idx]]
+
+            train_acc = ( train_recall + train_spec )/2
+            valid_acc = ( valid_recall + valid_spec )/2
 
             print(f'    <LOSS> train: {train_loss:.10f}, '
                   f'valid: {valid_loss:.10f}')
             print(f'    <ACC>  train: {train_acc:.10f}, '
                   f'valid: {valid_acc:.10f}')
+            loss_acc_hist[idx] = [train_loss, valid_loss, train_acc, valid_acc]
+
+            # write training history to drive
+            msg = (f'{epoch_number:.15f} {train_loss:.15f} {valid_loss:.15f} '
+                   f'{train_acc:.15f} {valid_acc:.15f} {f1_max:.15f}')
+            with open(train_hist_file, 'a+') as f_out:
+                f_out.write(msg+'\n')
+                f_out.flush()
 
             # Track best performance, and save the model's state
-            if valid_loss < best_vloss:
-                best_vloss = valid_loss
-                self.save_params(prefix='best')
+            if valid_loss < lowest_vloss:
+                lowest_vloss = valid_loss
+                self.save_params(prefix='lowest_loss')
 
-            epoch_number += 1
+            if f1_max > best_f1:
+                best_f1 = f1_max
+                self.save_params(prefix='best_f1')
+
+            filename_suffix = (
+                f'epoch_{epoch_number}' if plot_name is None else
+                f'{plot_name}-epoch_{epoch_number}'
+            )
+            if epoch_number % 25 == 0:
+                self.plotter.plot_pr(precision, recall,
+                                     filename_suffix=filename_suffix)
+
+            self.log(f'Epoch {epoch_number} complete with f1_max={f1_max:.15f}'
+                     f'(Wall time: {int(time.time()-epoch_start_time)})')
 
         self.save_params(prefix='last')
 
-    def kfold(n_folds=5):
+        self.f1_max_hist = np.vstack((self.f1_max_hist, f1_max_hist))
+        self.plotter.plot_f1_max_hist(self.f1_max_hist)
+
+        self.loss_acc_hist = np.vstack((self.loss_acc_hist, loss_acc_hist))
+        self.plotter.plot_loss_acc_hist(self.loss_acc_hist)
+
+        self.log(f'Finish training for {n_epochs} epochs '
+                 f'(Wall time: {int(time.time()-training_start_time)})')
+
+        return loss_acc_hist, f1_max_hist
+
+    def train_valid(self, n_epochs, batch_size=64):
         pass
+
+    def train_split(self, n_epochs, train_valid_ratio=0.9, batch_size=64):
+
+        # split dataset into training and validation sets
+        if float(train_valid_ratio) >= 1.0 and float(train_valid_ratio) > 0.0:
+            msg = (f'Cannot split training-validation set with '
+                   f'ratio {train_valid_ratio}')
+            self.log(msg)
+            raise ValueError(msg)
+
+        msg = (f'Spliting \'{self.dataset.set_name}\' into training and '
+               f'validation dataset with ratio {train_valid_ratio}')
+        print(msg)
+        self.log(msg)
+
+        n_total = len(self.dataset)
+        if n_total > batch_size:
+            n_train_data = int(
+                n_total*train_valid_ratio - (n_total*train_valid_ratio)%batch_size
+            )
+        else:
+            n_train_data = int(n_total*train_valid_ratio)
+        n_valid_data = n_total - n_train_data
+
+        train_dataset, valid_dataset = random_split(
+            self.dataset,
+            [n_train_data, n_valid_data],
+            generator=self.torch_gen
+        )
+
+        self._set_dataloaders(train_dataset,
+                              valid_dataset=valid_dataset,
+                              batch_size=batch_size,
+                              shuffle=False)
+
+        # save IDs in both datasets for reference
+        dataset_id_list = np.array(self.dataset.id_list)
+        np.savetxt(path.join(self.save_dir, 'train-id_list.txt'),
+                   dataset_id_list[train_dataset.indices], fmt='%s')
+        np.savetxt(path.join(self.save_dir, 'valid-id_list.txt'),
+                   dataset_id_list[valid_dataset.indices], fmt='%s')
+
+        train_hist_file = path.join(self.save_dir, 'training_hist.txt')
+        loss_acc_hist, f1_max_hist = self._train_valid_loop(
+            n_epochs=n_epochs,
+            train_hist_file=train_hist_file
+        )
+
+    def train_kfold(self, n_epochs=300, n_folds=5, batch_size=64):
+
+        self.log(f'Training with {n_folds} folds with {n_epochs} epochs each')
+
+        indices = np.arange(len(self.dataset))
+        n_valid = len(self.dataset)//5
+        np.random.shuffle(indices)
+
+        # save id list for all folds
+        for fold_idx in range(n_folds):
+            fold_num = fold_idx + 1
+            if fold_num < n_folds:
+                valid_idx = indices[fold_idx*n_valid:(fold_idx+1)*n_valid]
+            else:
+                valid_idx = indices[fold_idx*n_valid:]
+
+            id_list_filename = (
+                f'holdout_{fold_num}_of_{n_folds}folds-id_list.txt'
+            )
+            np.savetxt(path.join(self.save_dir, id_list_filename),
+                       np.array(self.dataset.id_list)[valid_idx], fmt='%s')
+
+        self.log(f'id_list.txt for all {n_folds} folds saved')
+
+        for fold_idx in range(n_folds):
+            fold_num = fold_idx + 1
+            print(f'\n###########\nFold {fold_num} of {n_folds}\n###########')
+
+            # split data into training and validation
+            if fold_num < n_folds:
+                valid_idx = indices[fold_idx*n_valid:(fold_idx+1)*n_valid]
+            else:
+                valid_idx = indices[fold_idx*n_valid:]
+            train_idx = np.setdiff1d(indices, valid_idx)
+            self._set_dataloaders(self.dataset[train_idx],
+                                  valid_dataset=self.dataset[valid_idx],
+                                  batch_size=batch_size,
+                                  shuffle=False)
+
+            # re-initialize parameters
+            for layer in self.model.children():
+                if hasattr(layer, 'reset_parameters'):
+                    layer.reset_parameters()
+
+            # train for n_epochs epochs
+            train_hist_file = path.join(self.save_dir,
+                                        f'training_hist-fold_{fold_num}.txt')
+            loss_acc_hist, f1_max_hist = self._train_valid_loop(
+                n_epochs=n_epochs,
+                train_hist_file=train_hist_file,
+                plot_name=f'fold_{fold_num}'
+            )
 
     def hyperparameter_grid_search(self):
         pass
@@ -288,65 +521,41 @@ class ProDAR_Experiment():
         torch.save(self.optimizer.state_dict(),
                    path.join(self.save_dir, f'{prefix}-optim-state_dict.pt'))
 
+        self.log(f'Model saved: {prefix}')
+
     def load_params(self, params_file):
 
-        self.model = torch.load(params_file).to(self.device)
+        print(f'Loading model parameters from file {params_file}...')
 
-    @torch.no_grad()
-    def get_pr_curve(self, dataloader, n_intervals=100):
+        self.model = torch.load(params_file,
+                                map_location=self.device)#.to(self.device)
 
-        # make pass through model and record output of last layer
-        self.model.train(False)
+        self.log(f'Model loaded: {params_file}')
 
-        output_all = []
-        data_y_all = []
+    def get_mfgo_dict(self, dataloader):
 
-        for i, data in enumerate(tqdm(dataloader,
-                                      desc=f'    {"PR eval":10s}',
-                                      ascii=True, dynamic_ncols=True)):
+        # print(Subset)
+        # print(type(dataloader))
+        if isinstance(dataloader.dataset, Subset):
+            return dataloader.dataset.dataset.mfgo_dict
+        else:
+            # print(type(datloader.dataset))
+            return dataloader.dataset.mfgo_dict
 
-            data = data.to(self.device)
-            data.x, data.y = data.x.float(), data.y.float()
-
-            output = self.model(data)
-
-            output_all.append(output)
-            data_y_all.append(data.y)
-
-        # compute confusion matrix elements for all thresholds (0~1)
-        tp_fp_tn_fn_all = np.empty((n_intervals,4))
-
-        for thres_idx, thres in enumerate(np.linspace(0,1,n_intervals)):
-
-            for idx in range(len(output_all)):
-                output = output_all[idx]
-                data_y = data_y_all[idx]
-
-                tp_fp_tn_fn += self._comp_tp_fp_tn_fn(output, data_y,
-                                                      thres=thres)
-
-            tp_fp_tn_fn_all[thres_idx] = tp_fp_tn_fn
-
-        # compute metrics
-        precision, recall, _ = self.comp_metrics(*tp_fp_tn_fn_all)
-
-        aupr = np.trapz(np.flip(precision), x=np.flip(recall))
-        f1 = 2*recall*precision / (recall+precision)
-        f1_max_idx = np.argmax(f1)
-        f1_max = f1[f1_max_idx]
-
-        return precision, recall
 
 if __name__ == '__main__':
-
 
     # from .../data import datasets
     from prodar import model
 
-    dataset = datasets.ContactCorrPers8A(set_name='test', entry_type='chain')
+    dataset = ContactCorrPers8A(set_name='original-restrained_5k',
+                                go_thres=25,
+                                entry_type='chain')
 
-    model = prodar_nn.ProDAR_NN(
-        dim_node_feat=21, dim_pers_feat=625, dim_out=123,
+    # print(len(dataset))
+
+    model = ProDAR_NN(
+        dim_node_feat=21, dim_pers_feat=625, dim_out=dataset.n_GO_terms,
         dim_node_hidden=256,
         dim_pers_embedding=512, dim_graph_embedding=512,
         dropout_rate=0.1,
@@ -355,7 +564,16 @@ if __name__ == '__main__':
         improved=False, add_self_loops=True
     )
 
-    loss_fn = nn.BCEWithLogitsLoss()
-    optim_fn = torch.optim.Adam
+    exp = ProDAR_Experiment(
+        model,
+        name_suffix=f'{dataset.set_name}-{dataset.go_thres}-dell',
+        rand_seed=69
+    )
+    plt = Plotter(save_dir=exp.save_dir)
 
-    ProDAR_Experiment(model, loss_fn)
+    # experiment setup
+    exp._set_dataloaders(dataset[:20], batch_size=64)
+    exp.set_loss_fn(nn.BCEWithLogitsLoss, pos_weight=dataset.pos_weight)
+    exp.set_optimizer(torch.optim.Adam, lr=0.000025)
+
+    exp.train_valid_kfold(n_folds=5)
