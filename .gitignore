@@ -1,0 +1,4 @@
+.DS_Store
+prodar/data/preprocessing/preprocessed/persistence_images/
+prodar/data/preprocessing/preprocessed/json_graphs/
+prodar/data/preprocessing/log/
