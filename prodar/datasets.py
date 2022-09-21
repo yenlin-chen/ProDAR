@@ -5,6 +5,7 @@ from .data.preprocessing import (
     preprocessor as pp,
     utils
 )
+from .data import res_dict
 
 from os import path
 import json
@@ -20,10 +21,6 @@ from tqdm import tqdm
 self_dir = path.dirname(path.realpath(__file__))
 data_dir = path.join(self_dir, 'data')
 df_processed_root = path.join(data_dir, 'pyg_processed')
-
-# load indices of residues
-with open(path.join(data_dir, 'residues.json'), 'r') as fin:
-    res_dict = json.load(fin)
 
 def remove_PI(data):
     '''
@@ -633,19 +630,3 @@ class AlternativeDataset(pyg.data.Dataset):
     def get(self, idx):
         return torch.load(path.join(self.processed_dir,
                                     self.processed_file_names[idx]))
-
-
-if __name__ == '__main__':
-
-    # dataset = ProDAR_Dataset(set_name='newtest',
-    #                          cont=True, corr=True, pers=False,
-    #                          cutoff=pp.df_cutoff, gamma=pp.df_gamma,
-    #                          corr_thres=pp.df_corr_thres,
-    #                          n_modes=pp.df_n_modes,
-    #                          simplex=pp.df_simplex)
-
-    # dataset = Contact8A(set_name='newtest')
-
-    dataset = ContactCorrPers8A(set_name='original-from_ids',
-                                go_thres=0,
-                                entry_type='chain')
