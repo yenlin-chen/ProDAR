@@ -1,10 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-if __name__ == '__main__':
-    import utils
-else:
-    from . import utils
+from . import utils
 
 import json
 import requests
@@ -947,33 +944,3 @@ class Preprocessor():
                         f'will be removed. Proceed? (y/n)')
             if inp.lower() in ['y', 'n']:
                 break
-
-
-if __name__ == '__main__':
-
-    # process = Preprocessor(set_name='test', entry_type='chain')
-
-    # process.preprocess(simplex=df_simplex,
-    #                    cutoff=8, gamma=df_gamma,
-    #                    corr_thres=df_corr_thres, n_modes=df_n_modes,
-    #                    retry_download=False,
-    #                    rebuild_pi=False, rebuild_graph=False,
-    #                    update_mfgo=True, verbose=None)
-
-    # dataset_list = ['original_7k', 'deepfri-all', 'deepfri-test',
-    #                 'deepfri-train', 'deepfri-valid', 'deepfri_and_original']
-    dataset_list = ['original-restrained_5k']
-
-    for set_name in dataset_list:
-
-        process = Preprocessor(set_name=set_name, entry_type='chain', go_thres=0)
-
-        # id_mfgo = process.gen_labels(id_list=None,
-        #                              retry_download=False, redownload=False,
-        #                              verbose=None)
-        process.preprocess(simplex=df_simplex,
-                           cutoff=8, gamma=df_gamma,
-                           corr_thres=df_corr_thres, n_modes=df_n_modes,
-                           retry_download=False,
-                           rebuild_pi=False, rebuild_graph=False,
-                           update_mfgo=True, verbose=None)
