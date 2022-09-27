@@ -526,17 +526,18 @@ class Preprocessor():
         cwd = getcwd()
         chdir(self.cif_cache_dir)
 
-        # try to fetch PDB
-        cache = prody.fetchPDB(ID[:4])
-        # try to fetch mmCIF if PDB cannot be downloaded
-        if cache is None:
-            # try:
-            #     prody.parseMMCIF(ID[:4], subset='calpha')
-            # except:
-            chdir(cwd)
-            msg = 'Cannot download structure'
-            utils.vprint(verbose, msg)
-            return None, msg
+        # if not try_CIF:
+        #     # try to fetch PDB
+        #     cache = prody.fetchPDB(ID[:4])
+        #     # try to fetch mmCIF if PDB cannot be downloaded
+        #     if cache is None:
+        #         # try:
+        #         #     prody.parseMMCIF(ID[:4], subset='calpha')
+        #         # except:
+        #         chdir(cwd)
+        #         msg = 'Cannot download structure'
+        #         utils.vprint(verbose, msg)
+        #         return None, msg
 
         # return data for all chains in PDB entry if no chains were
         # specified
@@ -550,7 +551,7 @@ class Preprocessor():
                 utils.vprint(verbose, msg)
                 return atoms, msg
             else: # parse failed
-                msg = 'Cannot parse PDB structure'
+                msg = 'Cannot download PDB structure'
                 utils.vprint(verbose, msg)
                 return None, msg
 
@@ -567,16 +568,28 @@ class Preprocessor():
                 utils.vprint(verbose, errMsg)
                 return None, errMsg
 
-            # leave function if data is retrieved
+            # try to parse chain if structure is retrieved
             if atoms is not None:
                 chdir(cwd)
-                msg = 'Structure downloaded and parsed'
-                utils.vprint(verbose, 'Done')
-                return atoms, msg
 
-            else: # none of the combinations worked
+                if atoms[chainID] is not None:
+                    msg = 'Structure downloaded/parsed'
+                    utils.vprint(verbose, 'Done')
+                    return atoms[chainID].copy(), msg
+
+                # elif atoms[chainID[:2]] is not None:
+                #     msg = 'Structure downloaded/parsed with modified chain ID'
+                #     utils.vprint(verbose, 'Done')
+                #     return atoms[chainID[:2]].copy(), msg
+
+                else:
+                    msg = f'ProDy cannot resolve chain ID {chainID}'
+                    utils.vprint(verbose, msg)
+                    return None, msg
+
+            else: # ProDy cannot download structure
                 chdir(cwd)
-                msg = f'ProDy cannot resolve chain ID {chainID}'
+                msg = 'ProDy cannot download structure'
                 utils.vprint(verbose, msg)
                 return None, msg
 
@@ -882,7 +895,7 @@ class Preprocessor():
                    new_cnt, fmt='%s %s')
 
         # check if any labels are present in every data entry
-        warning_file = path.join(save_dir, 'warning.txt')
+        warning_file = path.join(save_dir, 'warning-mfgo_update.txt')
         if any(new_mfgo_cnt==len(new_id_mfgo)):
             msg = (f'Warning: Labels '
                    f'{new_mfgo_unique[new_mfgo_cnt==len(new_id_mfgo)]} '
@@ -965,15 +978,18 @@ class Preprocessor():
         dataset_log = path.join(save_dir, self.process_logname)
         open(dataset_log, 'w+').close() # clear file content
 
+        # # dataset-sepcific warning
+        # warning_file = path.join(save_dir, 'warning-chain_id.txt')
+        # open(warning_file, 'w+').close() # clear file content
+
         # backup and clear logfile
         if retry_download and path.exists(self.struct_log):
             utils.backup_file(self.struct_log)
             # the list of IDs to skip will be empty
-            remove_file(self.struct_log)
+            utils.rm_log_entries(self.struct_log, id_list)
 
         # get list of PDBs/chains that should be skipped
         log_content, logged_ids = utils.read_logs(self.struct_log)
-        # logged_ids = [ID.lower() for ID in logged_ids]
         unit_str = 'chains' if self.entry_type=='chain' else 'PDB entries'
         utils.vprint(verbose, f' -> {len(logged_ids)} {unit_str} found in log')
 
@@ -1021,6 +1037,9 @@ class Preprocessor():
                 utils.append_to_file(f'{ID} -> ProDy: {msg}', self.struct_log)
                 unsuccessful_ids.append(ID)
                 continue
+            # # check if chain ID is modified for ProDy to work
+            # elif msg[-8:] == 'chain ID':
+            #     utils.append_to_file(f'{ID} -> ProDy: {msg}', warning_file)
             coords = atoms.getCoords().tolist()
 
             ############################################################
