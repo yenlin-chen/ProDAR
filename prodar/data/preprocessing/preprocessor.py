@@ -26,14 +26,17 @@ import networkx as nx
 self_dir = path.dirname(path.realpath(__file__))
 
 ########################################################################
-# GLOBAL VARIABLES (WILL USED BY SCIPTS THAT IMPORT THIS MODULE)
+# GLOBAL VARIABLES (USED BY SCIPTS THAT IMPORT THIS MODULE)
 ########################################################################
 df_preprocessed_root = path.join(self_dir, 'preprocessed')
 df_graph_root = path.join(df_preprocessed_root, 'json_graphs')
 df_pi_root = path.join(df_preprocessed_root, 'persistence_images')
+df_rcsb_template = path.join(self_dir, 'rcsb-payload-template')
 
 df_stats_root = path.join(self_dir, 'stats')
 
+df_payload_filename = 'payload.json'
+df_payload_template = 'payload-template.json'
 # df_entity_filename = 'entity-from_rcsb.txt'
 df_id_list_filename = 'id_list.txt'
 df_mfgo_cnt_filename = 'mfgo-count.txt'
@@ -92,6 +95,7 @@ class Preprocessor():
         self.label_dir = path.join(self.stats_root, 'labels',
                                    go_thres_folder_name.format(go_thres))
         self.target_dir = path.join(self.stats_root, 'target')
+        self.rcsb_dir = path.join(self.stats_root, 'rcsb-search-api')
 
         self.mfgo_cache_dir = path.join(self_dir, 'cache', 'mfgo')
         self.cif_cache_dir = path.join(self_dir, 'cache', 'cif')
@@ -111,6 +115,7 @@ class Preprocessor():
         ################################################################
         self.label_logname = 'id-failed_to_label.log'
         self.process_logname = 'id-failed_to_process.log'
+        self.entity2chain_logname = 'id-failed_to_convert_entity2chain.log'
 
         self.verbose = verbose
 
@@ -135,6 +140,8 @@ class Preprocessor():
 
         print('Done', end='\n\n')
 
+        self.go_url = 'https://www.ebi.ac.uk/pdbe/api/mappings/go/'
+
     def _get_mfgo_for_pdb(self, ID, redownload=False,
                           request_timeout=10, verbose=None):
 
@@ -151,8 +158,6 @@ class Preprocessor():
         verbose = self.verbose if verbose is None else verbose
         utils.vprint(verbose, f'Retrieving MF-GO for \'{ID}\'...',
                      end='', flush=True)
-
-        url = 'https://www.ebi.ac.uk/pdbe/api/mappings/go/'
 
         filename = utils.id_to_filename(ID)
         mfgo_cache = path.join(self.mfgo_cache_dir, f'{filename}.json')
@@ -171,7 +176,7 @@ class Preprocessor():
                 return mfgo, msg
 
         try:
-            data = requests.get(url+ID, timeout=request_timeout)
+            data = requests.get(self.go_url+ID, timeout=request_timeout)
         except requests.Timeout:
             msg = 'GET request timeout'
             utils.vprint(verbose, msg)
@@ -199,6 +204,160 @@ class Preprocessor():
         msg = 'Re-downloaded' if redownload_msg else 'Downloaded'
         utils.vprint(verbose, msg)
         return mfgo, msg
+
+    """
+    def _rcsb_query(self, payload):
+        '''
+        Make query to RCSB using the RCSB Search API to obtain a list of
+        PDB-entity IDs with a specified sequence similarity cutoff.
+        '''
+
+        # GET request
+        url = f"https://search.rcsb.org/rcsbsearch/v2/query?json={payload}"
+        data = requests.get(url)
+
+        # decode returned data if request is successful
+        if data.status_code != 200:
+            err_file = path.join(self.rcsb_dir, 'error.txt')
+            with open(err_file, 'w+') as f:
+                f.write(f'{data.text}')
+                f.flush()
+            return None, data.text
+        decoded = data.json()
+
+        print(f" -> {decoded['total_count']} proteins received from RCSB")
+
+        # convert decoded data into lists
+        polymers = [entry['identifier'] for entry in decoded['result_set']]
+        pdbs = np.unique([ID[:4] for ID in polymers])
+
+        # save list to corresponding directory
+        np.savetxt(path.join(self.rcsb_dir, 'pdb_entity.txt'),
+                   polymers, fmt='%s')
+        np.savetxt(path.join(self.rcsb_dir, 'pdb.txt'),
+                   pdbs, fmt='%s')
+
+        return polymers, 'Query successful'
+
+    def _entityID_to_chainID(self, pdbID, entityID, retry_download,
+                             redownload, verbose):
+
+        # dataest-specific log
+        dataset_log = path.join(self.rcsb_dir, self.entity2chain_logname)
+        open(dataset_log, 'w+').close() # clear file content
+
+        # backup and clear logfile
+        if retry_download and path.exists(self.mfgo_log):
+            utils.backup_file(self.mfgo_log)
+            # the list of IDs to skip will be empty
+            utils.rm_log_entries(self.mfgo_log, id_list)
+
+        # get list of PDBs/chains that should be skipped
+        log_content, logged_ids = utils.read_logs(self.mfgo_log)
+        logged_ids = [ID for ID in logged_ids]
+
+        ################################################################
+        # retrieve MF-GO annotations
+        ################################################################
+        mfgo_list = [] # holder for list of all MF-GOs
+        for ID in tqdm(id_list, unit=' entities',
+                       desc='Converting IDs',
+                       ascii=True, dynamic_ncols=True):
+
+            ############################################################
+            # skip if the PDB/chain failed to download in a previous run
+            ############################################################
+            if ID in logged_ids:
+                # copy entry to dataset-specific log
+                idx = logged_ids.index(ID)
+                utils.append_to_file(log_content[idx], dataset_log)
+                unsuccessful_ids.append(ID)
+                tqdm.write(f'  Skipping \'{ID}\'')
+                continue
+
+            # if the PDB entry was not skipped
+            tqdm.write(f'  Processing \'{ID}\'...')
+
+            ############################################################
+            # try to download MF-GO
+            ############################################################
+            tqdm.write('    Fetching MF-GO...')
+            mfgo, msg = self._get_mfgo_for_pdb(ID[:4], redownload=False,
+                                               verbose=False)
+            tqdm.write(f'        {msg}')
+            if mfgo is None:
+                utils.append_to_file(f'{ID} -> MF-GO: {msg}', dataset_log)
+                utils.append_to_file(f'{ID} -> MF-GO: {msg}', self.mfgo_log)
+                unsuccessful_ids.append(ID)
+                continue
+            else:
+                successful_ids.append(ID)
+
+
+
+
+
+    def gen_set_from_rcsb(self, similarity_cutoff=None, retry_download=False,
+                          redownload=False, verbose=None):
+        '''
+        Make query to RCSB using the RCSB Search API to obtain a list of
+        PDB-entity IDs with a specified sequence similarity cutoff.
+        The list of entity IDs is then converted to a list of chain IDs.
+        Entities without any MF-GO annotations are discarded, hence the
+        chains from that entity will not be present in the returned list
+        of chains.
+        '''
+
+        print('Generating set from query to RCSB...')
+        verbose = self.verbose if verbose is None else verbose
+
+        payload_file = path.join(self.rcsb_dir, df_payload_filename)
+        chain_file = path.join(self.rcsb_dir, 'pdb_chain.txt')
+        id_list_file = path.join(self.target_dir, df_id_list_filename)
+
+        if similarity_cutoff is not None:
+            # read and modify template with similarity cutoff
+            template_file = path.join(df_rcsb_template, df_payload_template)
+            with open(template_file, 'r') as f_in:
+                payload = f_in.read().replace('SIMILARITY_PLACEHOLDER',
+                                              similarity_cutoff)
+            # check if the specified payload file matches the existing
+            if path.exists(payload_file):
+                with open(payload_file, 'r') as f_in:
+                    existing_payload = f_in.read()
+                if existing_payload != payload:
+                    raise RuntimeError(f'{self.rcsb_dir} must not contain '
+                                       f'{df_payload_filename} if '
+                                       f'similarity_cutoff is specified')
+            else: # save a copy of payload for reference
+                with open(payload_file, 'w+') as f_out:
+                    f_out.write(payload+'\n')
+
+        # read readied payload file
+        elif similarity_cutoff is None:
+            with open(payload_file, 'r') as f:
+                payload = f.read()
+
+        polymers, msg = self._rcsb_query(payload)
+
+        # find all chains in pdbID-entityID and save to file
+        for polymer in enumerate(tqdm(polymers, ascii=True)):
+            pdbID, entityID = polymer.split('_')
+            chainIDs = self._entityID_to_chainID(pdbID, int(entityID),
+                                                 retry_download,
+                                                 redownload,
+                                                 verbose)
+            # save a copy where only one chain from each PDB is selected
+            utils.append_to_file(id_list_file, f'{pdbID}-{chainIDs[0]}')
+            # save a list of all chains in the entity
+            for chainID in chainIDs:
+                utils.append_to_file(chain_file, f'{pdbID}-{chainID}')
+
+        with open(id_list_file, 'r') as f_in:
+            id_list = f_in.read()
+
+        return id_list
+    """
 
     def gen_labels(self, id_list=None, retry_download=False,
                    redownload=False, verbose=None):
@@ -399,9 +558,14 @@ class Preprocessor():
         else:
             pdbID, chainID = ID[:4], ID[5:]
 
-            atoms = prody.parsePDB(pdbID,
-                                   subset=self.atomselect,
-                                   chain=chainID)
+            try:
+                atoms = prody.parsePDB(pdbID,
+                                       subset=self.atomselect,
+                                       chain=chainID)
+            except UnicodeDecodeError as errMsg:
+                chdir(cwd)
+                utils.vprint(verbose, errMsg)
+                return None, errMsg
 
             # leave function if data is retrieved
             if atoms is not None:
@@ -722,7 +886,7 @@ class Preprocessor():
         if any(new_mfgo_cnt==len(new_id_mfgo)):
             msg = (f'Warning: Labels '
                    f'{new_mfgo_unique[new_mfgo_cnt==len(new_id_mfgo)]} '
-                   f'exists in all data entries')
+                   f'exists in all data entries\n')
             with open(warning_file, 'w+') as f_out:
                 f_out.write(msg)
                 f_out.flush()
