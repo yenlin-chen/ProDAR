@@ -387,7 +387,7 @@ class ProDAR_Experiment():
                                      filename_suffix=filename_suffix)
 
             self.log(f'Epoch {epoch_number} complete with f1_max={f1_max:.15f}'
-                     f'(Wall time: {int(time.time()-epoch_start_time)})')
+                     f' (Wall time: {int(time.time()-epoch_start_time)})')
 
         self.save_params(prefix='last')
 
@@ -427,6 +427,12 @@ class ProDAR_Experiment():
         else:
             n_train_data = int(n_total*train_valid_ratio)
         n_valid_data = n_total - n_train_data
+
+        #### TODO ####
+        # ensure that every MF-GO appears in the training set at least
+        # once (currently it is possible that some MF-GO is only present
+        # in the validation set, or vice versa)
+        ##############
 
         train_dataset, valid_dataset = random_split(
             self.dataset,
@@ -486,8 +492,12 @@ class ProDAR_Experiment():
             else:
                 valid_idx = indices[fold_idx*n_valid:]
             train_idx = np.setdiff1d(indices, valid_idx)
-            self._set_dataloaders(self.dataset[train_idx],
-                                  valid_dataset=self.dataset[valid_idx],
+            print(type(train_idx))
+            print(train_idx.shape)
+            print(type(valid_idx))
+            print(valid_idx.shape)
+            self._set_dataloaders(self.dataset[list(train_idx)],
+                                  valid_dataset=self.dataset[list(valid_idx)],
                                   batch_size=batch_size,
                                   shuffle=False)
 
