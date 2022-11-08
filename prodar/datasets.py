@@ -125,10 +125,10 @@ class ProDAR_Dataset(pyg.data.Dataset):
     @property
     def pos_weight(self):
         mfgo_list = [e for v in self.mfgo_dict.values() for e in v]
-        unique, count, indices = np.unique(mfgo_list,
-                                           return_inverse=True,
-                                           return_counts=True)
-        pos_weight = ( len(self.mfgo_dict)-count[indices] ) / count[indices]
+        unique, count = np.unique(mfgo_list,
+                                  return_counts=True)
+        # pos_weights = num of negative samples / true samples
+        pos_weight = ( len(self.mfgo_dict)-count ) / count
         return torch.from_numpy(pos_weight)
 
     @property
@@ -512,6 +512,7 @@ class AlternativeDataset(pyg.data.Dataset):
                                            return_inverse=True,
                                            return_counts=True)
         pos_weight = ( len(self.mfgo_dict)-count[indices] ) / count[indices]
+        print(count[indices])
         return torch.from_numpy(pos_weight)
 
     @property
