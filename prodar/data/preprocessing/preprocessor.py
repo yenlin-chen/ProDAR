@@ -803,13 +803,15 @@ class Preprocessor():
 
         nx.set_node_attributes(graph, attrs)
 
-        # # define edge attributes
-        # utils.vprint(verbose, 'Edge Attributes...', end='', flush=True)
-        # for nodeI, nodeJ in graph.edges:
-        #     if comb[nodeI][nodeJ] == 1: # contact edge
-        #         graph.edges[(nodeI, nodeJ)]['weight'] = 1
-        #     elif comb[nodeI][nodeJ] == 2: # correlation edge
-        #         graph.edges[(nodeI, nodeJ)]['weight'] = -1
+        # modify edge attributes
+        utils.vprint(verbose, 'Edge Attributes...', end='', flush=True)
+        for nodeI, nodeJ in graph.edges:
+            if comb[nodeI][nodeJ] == 1: # contact edge
+                graph.edges[(nodeI, nodeJ)]['weight'] = [1,0]
+            elif comb[nodeI][nodeJ] == 2: # correlation edge
+                graph.edges[(nodeI, nodeJ)]['weight'] = [0,1]
+            elif comb[nodeI][nodeJ] == 3: # both contact and correlation
+                graph.edges[(nodeI, nodeJ)]['weight'] = [1,1]
 
         # map serial ID to residue ID
         mapping = dict(zip(graph, atoms.getResnums().tolist()))
