@@ -186,16 +186,17 @@ class ProDAR_Dataset(pyg.data.Dataset):
                 js_graph = json.load(fin)
 
             nx_graph = nx.readwrite.json_graph.node_link_graph(js_graph)
-            data = pyg.utils.from_networkx(nx_graph)
+            data = pyg.utils.from_networkx(nx_graph,
+                                           group_edge_attrs=['weight'])
 
-            # delete correlation edge to turn off the corr pipeline
+            # delete correlation edge to turn off the pipeline
             if not self.corr:
-                indices = torch.argwhere(~(data.weight==2)).squeeze()
+                indices = torch.argwhere(data.weight[:,0]==1).squeeze()
                 data.edge_index = torch.index_select(data.edge_index,
                                                      1, indices)
             # delete contact edge to turn off the contact pipeline
             if not self.cont:
-                indices = torch.argwhere(~(data.weight==1)).squeeze()
+                indices = torch.argwhere(data.weight[:,1]==1).squeeze()
                 data.edge_index = torch.index_select(data.edge_index,
                                                      1, indices)
 
