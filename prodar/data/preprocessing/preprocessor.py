@@ -781,16 +781,16 @@ class Preprocessor():
         utils.vprint(verbose, 'Cross Correlation...')
         corr = prody.calcCrossCorr(anm)
         mask = np.abs(corr) > corr_thres
-        corr = np.where(mask, 1, 0) # correlation map is completed here
+        corr = np.where(mask, 2, 0) # correlation map is completed here
 
         # compute adjacency matrix
-        diff = np.where(np.logical_and(corr==1, cont==0), -1, 0)
-        comb = cont + diff
+        # diff = np.where(np.logical_and(corr==1, cont==0), -1, 0)
+        comb = cont + corr # 0: none, 1: cont, 2: corr, 3: cont & corr
 
         # create Networkx graph object
         utils.vprint(verbose, '    Building graph ', end='', flush=True)
         utils.vprint(verbose, 'Edges...', end='', flush=True)
-        graph = nx.from_numpy_array(np.abs(comb))
+        graph = nx.from_numpy_array(comb)
 
         graph.graph['pdbID'] = ID[:4]
         if len(ID) > 4:
@@ -803,13 +803,13 @@ class Preprocessor():
 
         nx.set_node_attributes(graph, attrs)
 
-        # define edge attributes
-        utils.vprint(verbose, 'Edge Attributes...', end='', flush=True)
-        for nodeI, nodeJ in graph.edges:
-            if comb[nodeI][nodeJ] == 1: # contact edge
-                graph.edges[(nodeI, nodeJ)]['weight'] = 1
-            elif comb[nodeI][nodeJ] == -1: # correlation edge
-                graph.edges[(nodeI, nodeJ)]['weight'] = -1
+        # # define edge attributes
+        # utils.vprint(verbose, 'Edge Attributes...', end='', flush=True)
+        # for nodeI, nodeJ in graph.edges:
+        #     if comb[nodeI][nodeJ] == 1: # contact edge
+        #         graph.edges[(nodeI, nodeJ)]['weight'] = 1
+        #     elif comb[nodeI][nodeJ] == 2: # correlation edge
+        #         graph.edges[(nodeI, nodeJ)]['weight'] = -1
 
         # map serial ID to residue ID
         mapping = dict(zip(graph, atoms.getResnums().tolist()))

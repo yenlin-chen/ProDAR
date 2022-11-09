@@ -190,12 +190,12 @@ class ProDAR_Dataset(pyg.data.Dataset):
 
             # delete correlation edge to turn off the corr pipeline
             if not self.corr:
-                indices = torch.argwhere(data.weight==1).squeeze()
+                indices = torch.argwhere(~(data.weight==2)).squeeze()
                 data.edge_index = torch.index_select(data.edge_index,
                                                      1, indices)
             # delete contact edge to turn off the contact pipeline
             if not self.cont:
-                indices = torch.argwhere(data.weight==-1).squeeze()
+                indices = torch.argwhere(~(data.weight==1)).squeeze()
                 data.edge_index = torch.index_select(data.edge_index,
                                                      1, indices)
 
