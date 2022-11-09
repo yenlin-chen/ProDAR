@@ -774,16 +774,17 @@ class Preprocessor():
 
         # compute contact map
         utils.vprint(verbose, 'Kirchhoff...', end='', flush=True)
-        cont = - anm.getKirchhoff()
-        np.fill_diagonal(cont, 1)
+        cont = - anm.getKirchhoff().astype(np.int_) # not contact map
+        np.fill_diagonal(cont, 1) # contact map is completed here
 
         # compute correlation map
         utils.vprint(verbose, 'Cross Correlation...')
         corr = prody.calcCrossCorr(anm)
-        corr[np.abs(corr) < corr_thres] = 0
-        diff = np.where((cont-np.abs(corr)) < 0, -1, 0)
+        mask = np.abs(corr) > corr_thres
+        corr = np.where(mask, 1, 0) # correlation map is completed here
 
         # compute adjacency matrix
+        diff = np.where(np.logical_and(corr==1, cont==0), -1, 0)
         comb = cont + diff
 
         # create Networkx graph object
