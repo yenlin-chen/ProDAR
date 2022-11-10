@@ -1,0 +1,3 @@
+https://www.rcsb.org/docs/general-help/identifiers-in-pdb
+
+Macromolecules are polymeric chains made of covalently linked building blocks, such as amino acids and nucleotides. For each instance of protein or nucleic acid in the entry Chain IDs (e.g., A, A1, AA ) are assigned. Two sets of chain IDs are found in each PDB entry - one assigned by the PDB (label_asym_id), usually beginning with the alphabet A, and the other selected by the author (auth_asym_id) at the time of deposition. Most commonly both these chain IDs are the same but in some instances they may differ - e.g., in PDB ID 2or1, the author assigned chain IDs for the protein chains in the entry are L and R, while the PDB assigned ones are C and D respectively.
